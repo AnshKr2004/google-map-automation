@@ -8,66 +8,84 @@
 </head>
 <body>
     <div class="container">
-        <h1>Google Maps Data Scraper</h1>
+        <div class="header">
+            <img src="icon.svg" alt="Logo" class="logo">
+            <h1>Google Maps Data Scraper</h1>
+        </div>
         
-        <div class="status-section">
-            <div id="status" class="status">Ready to scrape</div>
-        </div>
-
-        <div class="controls">
-            <button id="scrapeBtn" class="btn btn-primary">
-                <span class="btn-text">Start Scraping</span>
-                <span class="loader" style="display: none;"></span>
-            </button>
-            <button id="stopBtn" class="btn btn-danger" style="display: none;">Stop Scraping</button>
-        </div>
-
+        <div id="status" class="status"></div>
+        
         <div class="stats">
-            <div class="stat-item">
-                <span class="stat-label">Businesses Found:</span>
-                <span id="businessCount" class="stat-value">0</span>
+            <div class="stat">
+                <div class="stat-label">Businesses Found:</div>
+                <div class="stat-value" id="businessCount">0</div>
             </div>
-            <div class="stat-item">
-                <span class="stat-label">Emails Found:</span>
-                <span id="emailCount" class="stat-value">0</span>
+            <div class="stat">
+                <div class="stat-label">Emails Found:</div>
+                <div class="stat-value" id="emailCount">0</div>
             </div>
         </div>
-
-        <div class="results-section">
-            <div class="results-header">
-                <h2>Scraped Data</h2>
-                <div class="results-actions">
-                    <button id="exportBtn" class="btn btn-secondary" disabled>Export CSV</button>
-                    <button id="clearBtn" class="btn btn-secondary" disabled>Clear</button>
-                </div>
+        
+        <div class="email-stats">
+            <div class="stat-small">
+                <span class="stat-label-small">Direct:</span>
+                <span class="stat-value-small" id="directEmailCount">0</span>
+            </div>
+            <div class="stat-small">
+                <span class="stat-label-small">Website:</span>
+                <span class="stat-value-small" id="websiteEmailCount">0</span>
+            </div>
+            <div class="stat-small">
+                <span class="stat-label-small">AI:</span>
+                <span class="stat-value-small" id="aiEmailCount">0</span>
+            </div>
+            <div class="stat-small">
+                <span class="stat-label-small">Inferred:</span>
+                <span class="stat-value-small" id="inferredEmailCount">0</span>
+            </div>
+        </div>
+        
+        <div class="controls">
+            <button id="startScraping" class="btn btn-primary">Start Scraping</button>
+            <button id="stopScraping" class="btn btn-danger" style="display: none;">Stop Scraping</button>
+        </div>
+        
+        <div class="settings">
+            <h3>Settings</h3>
+            <div class="setting-group">
+                <label>
+                    <input type="checkbox" id="autoScroll" checked>
+                    Auto-scroll for more results
+                </label>
+            </div>
+            <div class="setting-group">
+                <label>
+                    <input type="checkbox" id="useGrokAPI" checked>
+                    Use AI Enhancement (Grok API)
+                </label>
+            </div>
+            <div class="setting-group">
+                <label for="apiKey">Grok API Key:</label>
+                <input type="password" id="apiKey" placeholder="Enter your API key">
+                <button id="saveApiKey" class="btn btn-small">Save</button>
+                <a href="https://console.groq.com/" target="_blank" class="help-link">Get API Key</a>
+            </div>
+            <div class="setting-group">
+                <label for="scrapeDelay">Delay between scrapes (ms):</label>
+                <input type="number" id="scrapeDelay" value="1500" min="500" max="5000">
+            </div>
+        </div>
+        
+        <div class="scraped-data" id="scrapedData">
+            <h3>Scraped Data</h3>
+            <div class="data-controls">
+                <button id="exportCSV" class="btn btn-small">Export CSV</button>
+                <button id="clearData" class="btn btn-small btn-secondary">Clear</button>
             </div>
             <div id="results" class="results"></div>
         </div>
-
-        <div class="settings">
-            <h3>Settings</h3>
-            <div class="setting-item">
-                <label for="delayInput">Delay between scrapes (ms):</label>
-                <input type="number" id="delayInput" min="500" max="5000" value="1500">
-            </div>
-            <div class="setting-item">
-                <label for="autoScrollCheck">
-                    <input type="checkbox" id="autoScrollCheck" checked>
-                    Auto-scroll to load more results
-                </label>
-            </div>
-            <div class="setting-item">
-                <label for="useGrokAPICheck">
-                    <input type="checkbox" id="useGrokAPICheck" checked>
-                    Use AI-powered email extraction (Grok API)
-                </label>
-                <div class="setting-description">
-                    Enables advanced AI analysis to find emails when basic extraction fails
-                </div>
-            </div>
-        </div>
     </div>
-
+    
     <script src="popup.js"></script>
 </body>
 </html> 

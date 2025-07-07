@@ -1,5 +1,11 @@
 let isScrapingActive = false;
 let scrapedData = [];
+let emailStats = {
+    direct: 0,
+    website: 0,
+    ai: 0,
+    inferred: 0
+};
 
 // DOM elements
 const scrapeBtn = document.getElementById('scrapeBtn');
@@ -13,213 +19,191 @@ const clearBtn = document.getElementById('clearBtn');
 const delayInput = document.getElementById('delayInput');
 const autoScrollCheck = document.getElementById('autoScrollCheck');
 const useGrokAPICheck = document.getElementById('useGrokAPICheck');
+const apiKeyInput = document.getElementById('apiKey');
+const saveApiKeyBtn = document.getElementById('saveApiKey');
 
-// Load saved data and settings on popup open
-chrome.storage.local.get(['scrapedData', 'settings'], (result) => {
-    if (result.scrapedData) {
-        scrapedData = result.scrapedData;
-        updateUI();
+document.addEventListener('DOMContentLoaded', async () => {
+    // Initialize UI
+    updateUI();
+    
+    // Load saved API key
+    const apiKey = await getStoredApiKey();
+    if (apiKey && apiKey !== 'YOUR_GROK_API_KEY') {
+        document.getElementById('apiKey').value = apiKey;
     }
     
-    // Load settings
-    if (result.settings) {
-        delayInput.value = result.settings.delay || 1500;
-        autoScrollCheck.checked = result.settings.autoScroll !== false;
-        useGrokAPICheck.checked = result.settings.useGrokAPI !== false;
+    // Load saved data
+    chrome.storage.local.get(['scrapedData', 'emailStats'], (result) => {
+        if (result.scrapedData) {
+            scrapedData = result.scrapedData;
+            updateResults();
+        }
+        if (result.emailStats) {
+            emailStats = result.emailStats;
+            updateEmailStats();
+        }
+    });
+    
+    // Check if scraping is active
+    chrome.runtime.sendMessage({ action: 'getScrapingStatus' }, (response) => {
+        if (response && response.isActive) {
+            isScrapingActive = true;
+            updateUI();
+        }
+    });
+    
+    // Button event listeners
+    document.getElementById('startScraping').addEventListener('click', startScraping);
+    document.getElementById('stopScraping').addEventListener('click', stopScraping);
+    document.getElementById('exportCSV').addEventListener('click', exportData);
+    document.getElementById('clearData').addEventListener('click', clearData);
+    document.getElementById('saveApiKey').addEventListener('click', saveApiKey);
+    
+    // Auto-update stats
+    setInterval(updateStatsFromStorage, 1000);
+});
+
+// Listen for messages from background script
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    switch (message.action) {
+        case 'dataScraped':
+            handleScrapedData(message.data);
+            break;
+        case 'statusUpdate':
+            updateStatus(message.status, message.type);
+            break;
+        case 'scrapingComplete':
+            isScrapingActive = false;
+            updateUI();
+            updateStatus('Scraping complete!', 'success');
+            break;
+        case 'scrapingError':
+            isScrapingActive = false;
+            updateUI();
+            updateStatus(`Error: ${message.error}`, 'error');
+            break;
     }
 });
 
-// Event listeners
-scrapeBtn.addEventListener('click', startScraping);
-stopBtn.addEventListener('click', stopScraping);
-exportBtn.addEventListener('click', exportData);
-clearBtn.addEventListener('click', clearData);
-
-// Settings event listeners
-delayInput.addEventListener('change', saveSettings);
-autoScrollCheck.addEventListener('change', saveSettings);
-useGrokAPICheck.addEventListener('change', saveSettings);
-
 // Start scraping
-async function startScraping() {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    
+function startScraping() {
     // Check if we're on Google Maps
-    if (!tab.url.includes('google.com/maps') && !tab.url.includes('maps.google.com')) {
-        updateStatus('Please navigate to Google Maps first', 'error');
-        return;
-    }
-
-    isScrapingActive = true;
-    updateStatus('Scraping in progress...', 'warning');
-    toggleButtons(true);
-
-    // Send message to content script to start scraping
-    chrome.tabs.sendMessage(tab.id, {
-        action: 'startScraping',
-        settings: {
-            delay: parseInt(delayInput.value),
-            autoScroll: autoScrollCheck.checked,
-            useGrokAPI: useGrokAPICheck.checked
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        const tab = tabs[0];
+        if (!tab.url || (!tab.url.includes('google.com/maps') && !tab.url.includes('maps.google.com'))) {
+            updateStatus('Please navigate to Google Maps search results first', 'error');
+            return;
         }
+        
+        isScrapingActive = true;
+        updateUI();
+        
+        const settings = {
+            delay: parseInt(document.getElementById('scrapeDelay').value) || 1500,
+            autoScroll: document.getElementById('autoScroll').checked,
+            useGrokAPI: document.getElementById('useGrokAPI').checked
+        };
+        
+        chrome.tabs.sendMessage(tab.id, {
+            action: 'startScraping',
+            settings: settings
+        });
+        
+        updateStatus('Starting scraping process...', 'warning');
     });
-
-    // Listen for messages from content script
-    chrome.runtime.onMessage.addListener(handleContentMessage);
 }
 
 // Stop scraping
 function stopScraping() {
-    isScrapingActive = false;
-    updateStatus('Scraping stopped', 'success');
-    toggleButtons(false);
-
-    // Send message to content script to stop scraping
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         chrome.tabs.sendMessage(tabs[0].id, { action: 'stopScraping' });
     });
+    
+    isScrapingActive = false;
+    updateUI();
+    updateStatus('Scraping stopped', 'warning');
 }
 
 // Handle messages from content script
-function handleContentMessage(message, sender, sendResponse) {
-    if (!isScrapingActive) return;
-
-    switch (message.action) {
-        case 'dataScraped':
-            addScrapedData(message.data);
-            break;
-        case 'scrapingComplete':
-            stopScraping();
-            updateStatus('Scraping completed successfully', 'success');
-            break;
-        case 'scrapingError':
-            stopScraping();
-            updateStatus(`Error: ${message.error}`, 'error');
-            break;
-        case 'statusUpdate':
-            updateStatus(message.status, message.type || 'default');
-            break;
-    }
-}
-
-// Add scraped data
-function addScrapedData(data) {
+function handleScrapedData(data) {
     // Check if business already exists
-    const exists = scrapedData.some(item => 
+    const existingIndex = scrapedData.findIndex(item => 
         item.name === data.name && item.address === data.address
     );
-
-    if (!exists) {
+    
+    if (existingIndex === -1) {
+        // Track email source
+        if (data.email) {
+            if (data.email_source === 'inferred') {
+                emailStats.inferred++;
+            } else if (data.email_source === 'website') {
+                emailStats.website++;
+            } else if (data.email_source === 'ai') {
+                emailStats.ai++;
+            } else {
+                emailStats.direct++;
+            }
+        }
+        
         scrapedData.push(data);
-        chrome.storage.local.set({ scrapedData });
-        updateUI();
+        saveData();
+        updateResults();
+        updateEmailStats();
     }
 }
 
 // Update UI
 function updateUI() {
-    // Update counts
-    businessCountSpan.textContent = scrapedData.length;
-    const emailCount = scrapedData.reduce((count, item) => {
-        let emails = 0;
-        if (item.email) emails++;
-        if (item.additional_emails && item.additional_emails.length > 0) {
-            emails += item.additional_emails.length;
-        }
-        return count + (emails > 0 ? 1 : 0);
-    }, 0);
-    emailCountSpan.textContent = emailCount;
-
-    // Update results display
-    resultsDiv.innerHTML = '';
-    scrapedData.forEach(item => {
-        const resultItem = document.createElement('div');
-        resultItem.className = 'result-item';
-        
-        let details = '';
-        if (item.phone) details += `Phone: ${item.phone}<br>`;
-        if (item.additional_phones && item.additional_phones.length > 0) {
-            details += `Additional Phones: ${item.additional_phones.join(', ')}<br>`;
-        }
-        if (item.website) details += `Website: ${item.website}<br>`;
-        if (item.email) details += `<span class="email">Email: ${item.email}</span><br>`;
-        if (item.additional_emails && item.additional_emails.length > 0) {
-            details += `<span class="email">Additional Emails: ${item.additional_emails.join(', ')}</span><br>`;
-        }
-        if (item.social_media && item.social_media.length > 0) {
-            details += `Social Media: ${item.social_media.join(', ')}<br>`;
-        }
-        if (item.additional_contacts && item.additional_contacts.length > 0) {
-            details += `Other Contacts: ${item.additional_contacts.join(', ')}<br>`;
-        }
-        if (item.rating) details += `Rating: ${item.rating}`;
-
-        resultItem.innerHTML = `
-            <strong>${item.name}</strong>
-            <div class="details">
-                ${item.address || 'No address'}<br>
-                ${details}
-            </div>
-        `;
-        resultsDiv.appendChild(resultItem);
-    });
-
-    // Enable/disable action buttons
-    const hasData = scrapedData.length > 0;
-    exportBtn.disabled = !hasData;
-    clearBtn.disabled = !hasData;
+    const startBtn = document.getElementById('startScraping');
+    const stopBtn = document.getElementById('stopScraping');
+    const exportBtn = document.getElementById('exportCSV');
+    const clearBtn = document.getElementById('clearData');
+    
+    if (isScrapingActive) {
+        startBtn.style.display = 'none';
+        stopBtn.style.display = 'block';
+        exportBtn.disabled = true;
+        clearBtn.disabled = true;
+    } else {
+        startBtn.style.display = 'block';
+        stopBtn.style.display = 'none';
+        exportBtn.disabled = scrapedData.length === 0;
+        clearBtn.disabled = scrapedData.length === 0;
+    }
 }
 
 // Update status
 function updateStatus(message, type = 'default') {
     statusDiv.textContent = message;
-    statusDiv.className = 'status';
-    if (type !== 'default') {
-        statusDiv.classList.add(type);
-    }
-}
-
-// Toggle buttons
-function toggleButtons(isScraping) {
-    if (isScraping) {
-        scrapeBtn.style.display = 'none';
-        stopBtn.style.display = 'flex';
-        document.querySelector('.loader').style.display = 'inline-block';
-    } else {
-        scrapeBtn.style.display = 'flex';
-        stopBtn.style.display = 'none';
-        document.querySelector('.loader').style.display = 'none';
-    }
+    statusDiv.className = `status ${type}`;
 }
 
 // Export data to CSV
 function exportData() {
     if (scrapedData.length === 0) return;
-
-    let csv = 'Name,Address,Phone,Additional Phones,Website,Email,Additional Emails,Social Media,Other Contacts,Rating\n';
-    scrapedData.forEach(item => {
-        csv += `"${item.name || ''}","${item.address || ''}","${item.phone || ''}","${(item.additional_phones || []).join('; ')}","${item.website || ''}","${item.email || ''}","${(item.additional_emails || []).join('; ')}","${(item.social_media || []).join('; ')}","${(item.additional_contacts || []).join('; ')}","${item.rating || ''}"\n`;
-    });
-
-    // Create blob and download
+    
+    const csv = convertToCSV(scrapedData);
     const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `google-maps-data-${new Date().toISOString().split('T')[0]}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-
-    updateStatus('Data exported successfully', 'success');
+    const url = window.URL.createObjectURL(blob);
+    
+    chrome.downloads.download({
+        url: url,
+        filename: `google-maps-data-${new Date().toISOString().slice(0, 10)}.csv`
+    });
+    
+    updateStatus('Data exported successfully!', 'success');
 }
 
 // Clear data
 function clearData() {
     if (confirm('Are you sure you want to clear all scraped data?')) {
         scrapedData = [];
-        chrome.storage.local.remove('scrapedData');
+        emailStats = { direct: 0, website: 0, ai: 0, inferred: 0 };
+        saveData();
+        updateResults();
+        updateEmailStats();
         updateUI();
-        updateStatus('Data cleared', 'success');
+        updateStatus('Data cleared', 'warning');
     }
 }
 
@@ -232,4 +216,111 @@ function saveSettings() {
     };
     
     chrome.storage.local.set({ settings });
+}
+
+async function saveApiKey() {
+    const apiKey = document.getElementById('apiKey').value.trim();
+    
+    if (!apiKey) {
+        updateStatus('Please enter an API key', 'error');
+        return;
+    }
+    
+    await chrome.storage.local.set({ grokApiKey: apiKey });
+    updateStatus('API key saved successfully!', 'success');
+    
+    // Send message to background script
+    chrome.runtime.sendMessage({ action: 'apiKeyUpdated' });
+}
+
+async function getStoredApiKey() {
+    return new Promise((resolve) => {
+        chrome.storage.local.get(['grokApiKey'], (result) => {
+            resolve(result.grokApiKey || '');
+        });
+    });
+}
+
+function updateEmailStats() {
+    document.getElementById('directEmailCount').textContent = emailStats.direct;
+    document.getElementById('websiteEmailCount').textContent = emailStats.website;
+    document.getElementById('aiEmailCount').textContent = emailStats.ai;
+    document.getElementById('inferredEmailCount').textContent = emailStats.inferred;
+}
+
+function updateResults() {
+    const resultsDiv = document.getElementById('results');
+    const businessCount = document.getElementById('businessCount');
+    const emailCount = document.getElementById('emailCount');
+    
+    businessCount.textContent = scrapedData.length;
+    emailCount.textContent = scrapedData.filter(item => item.email).length;
+    
+    if (scrapedData.length === 0) {
+        resultsDiv.innerHTML = '<p style="text-align: center; color: #999;">No data scraped yet</p>';
+        return;
+    }
+    
+    resultsDiv.innerHTML = scrapedData.map((item, index) => {
+        const emailDisplay = item.email 
+            ? `<span class="email">${item.email}</span>` 
+            : '<span class="no-email">No email found</span>';
+        
+        const additionalEmails = item.additional_emails && item.additional_emails.length > 0
+            ? `<br>Additional: ${item.additional_emails.join(', ')}`
+            : '';
+        
+        return `
+            <div class="result-item">
+                <h4>${index + 1}. ${item.name || 'Unknown Business'}</h4>
+                <p>📍 ${item.address || 'No address'}</p>
+                ${item.phone ? `<p>📞 ${item.phone}</p>` : ''}
+                ${item.website ? `<p>🌐 ${item.website}</p>` : ''}
+                <p>✉️ ${emailDisplay}${additionalEmails}</p>
+                ${item.rating ? `<p>⭐ ${item.rating}</p>` : ''}
+            </div>
+        `;
+    }).join('');
+}
+
+function updateStatsFromStorage() {
+    if (isScrapingActive) {
+        chrome.storage.local.get(['scrapedData', 'emailStats'], (result) => {
+            if (result.scrapedData && result.scrapedData.length > scrapedData.length) {
+                scrapedData = result.scrapedData;
+                updateResults();
+            }
+            if (result.emailStats) {
+                emailStats = result.emailStats;
+                updateEmailStats();
+            }
+        });
+    }
+}
+
+function convertToCSV(data) {
+    const headers = ['Name', 'Address', 'Phone', 'Website', 'Email', 'Additional Emails', 'Rating'];
+    const rows = data.map(item => [
+        item.name || '',
+        item.address || '',
+        item.phone || '',
+        item.website || '',
+        item.email || '',
+        (item.additional_emails || []).join('; '),
+        item.rating || ''
+    ]);
+    
+    const csvContent = [
+        headers.join(','),
+        ...rows.map(row => row.map(cell => `"${cell.replace(/"/g, '""')}"`).join(','))
+    ].join('\n');
+    
+    return csvContent;
+}
+
+function saveData() {
+    chrome.storage.local.set({ 
+        scrapedData: scrapedData,
+        emailStats: emailStats
+    });
 } 

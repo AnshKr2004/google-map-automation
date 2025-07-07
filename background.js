@@ -339,7 +339,17 @@ If no emails can be reasonably inferred, return an empty emails array.
 // Function to call Grok API for enhanced data extraction
 async function callGrokAPI(data) {
     try {
-        const GROK_API_KEY = 'YOUR_GROK_API_KEY'; // Should be stored securely
+        // API key should be stored in chrome.storage or environment variable
+        // For demonstration, using a placeholder - users should add their own key
+        const GROK_API_KEY = await getGrokAPIKey();
+        
+        if (!GROK_API_KEY || GROK_API_KEY === 'YOUR_GROK_API_KEY') {
+            console.log('Grok API key not configured, skipping AI-enhanced extraction');
+            return {
+                success: false,
+                message: 'Grok API key not configured'
+            };
+        }
         
         // Using OpenRouter as the provider (most reliable option)
         const API_ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions';
@@ -366,6 +376,7 @@ Please help me find contact information by:
    - Consider common business email formats (info@, contact@, sales@, support@, hello@)
    - Look for patterns in the business name that might form email addresses
    - Consider the business type and industry-standard contact methods
+   - For domains like example.com, suggest: info@example.com, contact@example.com, hello@example.com, admin@example.com, support@example.com
 
 2. **Phone Number Analysis**:
    - Extract any additional phone numbers from the additional information
@@ -394,6 +405,8 @@ Please provide your analysis in this JSON format:
 }
 
 Focus on realistic, likely contact information based on the business data provided. If no specific information can be determined, provide educated guesses based on common business practices and patterns.
+
+IMPORTANT: Always include at least 3-5 likely email addresses if a website domain is provided.
 
 Return only valid JSON.
 `;
@@ -499,24 +512,39 @@ Return only valid JSON.
                 phone && phone.replace(/\D/g, '').length >= 10
             );
         }
-
-        console.log('Processed Grok API data:', extractedData);
-
+        
+        console.log('Grok API final extracted data:', extractedData);
+        
         return {
             success: true,
-            data: extractedData,
-            usage: result.usage,
-            model: 'x-ai/grok-3-mini-beta'
+            data: extractedData
         };
         
     } catch (error) {
-        console.error('Grok API Error:', error);
+        console.error('Grok API error:', error);
         return {
             success: false,
-            error: error.message,
-            details: error.stack
+            error: error.message
         };
     }
+}
+
+// Function to get Grok API key from storage
+async function getGrokAPIKey() {
+    return new Promise((resolve) => {
+        chrome.storage.local.get(['grokApiKey'], (result) => {
+            resolve(result.grokApiKey || 'YOUR_GROK_API_KEY');
+        });
+    });
+}
+
+// Function to set Grok API key in storage
+async function setGrokAPIKey(apiKey) {
+    return new Promise((resolve) => {
+        chrome.storage.local.set({ grokApiKey: apiKey }, () => {
+            resolve();
+        });
+    });
 }
 
 // Handle extension installation

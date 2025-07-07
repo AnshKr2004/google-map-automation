@@ -214,6 +214,12 @@ async function extractBusinessData() {
             if (extractedEmails.length > 1) {
                 data.additional_emails = extractedEmails.slice(1);
             }
+            // Track email source - check if emails were marked as inferred
+            if (extractedEmails._isInferred) {
+                data.email_source = 'inferred';
+            } else {
+                data.email_source = 'direct';
+            }
         }
         
         // Get additional text content for analysis
@@ -236,6 +242,7 @@ async function extractBusinessData() {
                     if (websiteResponse.emails.length > 1) {
                         data.additional_emails = websiteResponse.emails.slice(1);
                     }
+                    data.email_source = 'website';
                     extractedEmails = websiteResponse.emails;
                 }
             } catch (websiteError) {
@@ -258,6 +265,7 @@ async function extractBusinessData() {
                         console.log('Found emails from Grok API:', grokResponse.data.emails);
                         data.email = grokResponse.data.emails[0];
                         data.additional_emails = grokResponse.data.emails.slice(1);
+                        data.email_source = 'ai';
                     }
                     
                     if (grokResponse.data.phones && grokResponse.data.phones.length > 0) {
@@ -285,7 +293,7 @@ async function extractBusinessData() {
         
         // Log final results
         if (data.email) {
-            console.log('Successfully extracted email:', data.email);
+            console.log('Successfully extracted email:', data.email, 'Source:', data.email_source);
         } else {
             console.log('No email found for business:', data.name);
         }
@@ -305,6 +313,12 @@ async function extractEmailsComprehensively() {
     // First, get the user's email to filter it out
     const userEmail = getUserEmail();
     console.log('User email detected:', userEmail);
+    
+    // Get business name and website for inference
+    const businessName = document.querySelector('h1')?.textContent?.trim() || '';
+    const websiteElement = document.querySelector('a[data-item-id="authority"]');
+    const websiteUrl = websiteElement?.href || '';
+    const domain = extractDomainFromUrl(websiteUrl);
     
     // Enhanced Priority Method: Look for business email in the most likely locations first
     const priorityBusinessEmailSelectors = [
@@ -401,7 +415,38 @@ async function extractEmailsComprehensively() {
         '.section-description',
         '.section-directions',
         '.section-overview',
-        '.section-business-details'
+        '.section-business-details',
+        
+        // NEW: Additional selectors for hidden or dynamic content
+        '[data-test-id*="contact"]',
+        '[data-test-id*="email"]',
+        '.contact-card',
+        '.info-card',
+        '.business-card',
+        'span[aria-label*="email"]',
+        'span[aria-label*="Email"]',
+        'span[aria-label*="contact"]',
+        'div[aria-label*="email"]',
+        'div[aria-label*="Email"]',
+        'div[aria-label*="contact"]',
+        '[data-email-address]',
+        '[data-contact-method]',
+        '.widget-pane-link',
+        '.widget-pane-info',
+        '.place-result-info',
+        '.place-contact-info',
+        '.ugiz4pqJLAG__primary-text',
+        '.ugiz4pqJLAG__secondary-text',
+        '.RcCsl', // Info text
+        '.MyEned', // Label text
+        '.section-result-text-content',
+        '.section-result-details',
+        '.section-result-action',
+        '.section-result-icon',
+        '[data-tooltip*="Email"]',
+        '[data-tooltip*="email"]',
+        '[data-tooltip*="Contact"]',
+        '[data-tooltip*="contact"]'
     ];
     
     // Search in priority locations first with enhanced extraction
@@ -420,7 +465,7 @@ async function extractEmailsComprehensively() {
                 }
                 
                 // For other elements, extract from text content
-                const foundEmails = extractEmailsFromText(element.textContent);
+                const foundEmails = extractEmailsFromTextEnhanced(element.textContent);
                 foundEmails.forEach(email => {
                     if (isValidBusinessEmail(email, userEmail)) {
                         emails.add(email);
@@ -433,7 +478,7 @@ async function extractEmailsComprehensively() {
                 for (let i = 0; i < dataAttrs.length; i++) {
                     const attr = dataAttrs[i];
                     if (attr.value && attr.value.includes('@')) {
-                        const foundEmails = extractEmailsFromText(attr.value);
+                        const foundEmails = extractEmailsFromTextEnhanced(attr.value);
                         foundEmails.forEach(email => {
                             if (isValidBusinessEmail(email, userEmail)) {
                                 emails.add(email);
@@ -445,7 +490,7 @@ async function extractEmailsComprehensively() {
                 
                 // Check innerHTML for emails (sometimes emails are in hidden elements)
                 if (element.innerHTML && element.innerHTML.includes('@')) {
-                    const foundEmails = extractEmailsFromText(element.innerHTML);
+                    const foundEmails = extractEmailsFromTextEnhanced(element.innerHTML);
                     foundEmails.forEach(email => {
                         if (isValidBusinessEmail(email, userEmail)) {
                             emails.add(email);
@@ -453,6 +498,41 @@ async function extractEmailsComprehensively() {
                         }
                     });
                 }
+                
+                // NEW: Check for obfuscated emails (e.g., "contact [at] example [dot] com")
+                const obfuscatedEmails = extractObfuscatedEmails(element.textContent);
+                obfuscatedEmails.forEach(email => {
+                    if (isValidBusinessEmail(email, userEmail)) {
+                        emails.add(email);
+                        console.log('Found obfuscated email:', email);
+                    }
+                });
+            }
+        });
+    }
+    
+    // NEW: Deep search in all text nodes
+    const walker = document.createTreeWalker(
+        document.body,
+        NodeFilter.SHOW_TEXT,
+        {
+            acceptNode: function(node) {
+                if (node.textContent && node.textContent.includes('@') && 
+                    isElementInBusinessDetailsPanel(node.parentElement)) {
+                    return NodeFilter.FILTER_ACCEPT;
+                }
+                return NodeFilter.FILTER_SKIP;
+            }
+        }
+    );
+    
+    let textNode;
+    while (textNode = walker.nextNode()) {
+        const foundEmails = extractEmailsFromTextEnhanced(textNode.textContent);
+        foundEmails.forEach(email => {
+            if (isValidBusinessEmail(email, userEmail)) {
+                emails.add(email);
+                console.log('Found email in text node:', email);
             }
         });
     }
@@ -462,7 +542,7 @@ async function extractEmailsComprehensively() {
     clickableElements.forEach(element => {
         if (isElementInBusinessDetailsPanel(element)) {
             const text = element.textContent || element.getAttribute('aria-label') || element.getAttribute('title') || '';
-            const foundEmails = extractEmailsFromText(text);
+            const foundEmails = extractEmailsFromTextEnhanced(text);
             foundEmails.forEach(email => {
                 if (isValidBusinessEmail(email, userEmail)) {
                     emails.add(email);
@@ -472,13 +552,17 @@ async function extractEmailsComprehensively() {
         }
     });
     
+    // NEW: Look for contact page links and attempt to infer emails
+    const contactLinks = findContactPageLinks();
+    console.log('Found contact page links:', contactLinks);
+    
     // Enhanced Method: Check for emails in structured data and JSON-LD
     const scriptTags = document.querySelectorAll('script[type="application/ld+json"]');
     scriptTags.forEach(script => {
         try {
             const jsonData = JSON.parse(script.textContent);
             const jsonString = JSON.stringify(jsonData);
-            const foundEmails = extractEmailsFromText(jsonString);
+            const foundEmails = extractEmailsFromTextEnhanced(jsonString);
             foundEmails.forEach(email => {
                 if (isValidBusinessEmail(email, userEmail)) {
                     emails.add(email);
@@ -495,7 +579,7 @@ async function extractEmailsComprehensively() {
     metaTags.forEach(meta => {
         const content = meta.getAttribute('content');
         if (content) {
-            const foundEmails = extractEmailsFromText(content);
+            const foundEmails = extractEmailsFromTextEnhanced(content);
             foundEmails.forEach(email => {
                 if (isValidBusinessEmail(email, userEmail)) {
                     emails.add(email);
@@ -527,7 +611,7 @@ async function extractEmailsComprehensively() {
         const elements = document.querySelectorAll(selector);
         elements.forEach(element => {
             if (isElementInBusinessDetailsPanel(element)) {
-                const foundEmails = extractEmailsFromText(element.textContent);
+                const foundEmails = extractEmailsFromTextEnhanced(element.textContent);
                 foundEmails.forEach(email => {
                     if (isValidBusinessEmail(email, userEmail)) {
                         emails.add(email);
@@ -544,7 +628,7 @@ async function extractEmailsComprehensively() {
         if (isElementInBusinessDetailsPanel(link)) {
             const href = link.href;
             const text = link.textContent;
-            const foundEmails = extractEmailsFromText(text + ' ' + href);
+            const foundEmails = extractEmailsFromTextEnhanced(text + ' ' + href);
             foundEmails.forEach(email => {
                 if (isValidBusinessEmail(email, userEmail)) {
                     emails.add(email);
@@ -573,7 +657,7 @@ async function extractEmailsComprehensively() {
         const elements = document.querySelectorAll(selector);
         elements.forEach(element => {
             if (isElementInBusinessDetailsPanel(element)) {
-                const foundEmails = extractEmailsFromText(element.textContent || element.innerHTML);
+                const foundEmails = extractEmailsFromTextEnhanced(element.textContent || element.innerHTML);
                 foundEmails.forEach(email => {
                     if (isValidBusinessEmail(email, userEmail)) {
                         emails.add(email);
@@ -590,7 +674,7 @@ async function extractEmailsComprehensively() {
         if (isElementInBusinessDetailsPanel(img)) {
             const alt = img.getAttribute('alt') || '';
             const title = img.getAttribute('title') || '';
-            const foundEmails = extractEmailsFromText(alt + ' ' + title);
+            const foundEmails = extractEmailsFromTextEnhanced(alt + ' ' + title);
             foundEmails.forEach(email => {
                 if (isValidBusinessEmail(email, userEmail)) {
                     emails.add(email);
@@ -600,8 +684,37 @@ async function extractEmailsComprehensively() {
         }
     });
     
-    console.log(`Found ${emails.size} unique business emails after comprehensive extraction`);
-    return Array.from(emails);
+    // NEW: If we have a domain but no emails found yet, try email inference
+    if (emails.size === 0 && domain) {
+        console.log('No emails found directly, trying email inference from domain:', domain);
+        const inferredEmails = inferCommonBusinessEmails(domain, businessName);
+        
+        // Only add the most likely inferred emails (top 5)
+        const mostLikelyInferred = inferredEmails.slice(0, 5);
+        console.log('Inferred possible emails:', mostLikelyInferred);
+        
+        // These are inferred, so we'll mark them for tracking
+        mostLikelyInferred.forEach(email => {
+            if (isValidBusinessEmail(email, userEmail)) {
+                emails.add(email);
+            }
+        });
+        
+        // If we added inferred emails, return them with a flag
+        if (emails.size > 0) {
+            const allEmails = Array.from(emails);
+            // Mark that these are inferred by returning a special structure
+            allEmails._isInferred = true;
+            console.log(`Email extraction complete: 0 found, ${allEmails.length} inferred`);
+            return allEmails;
+        }
+    }
+    
+    // Return found emails
+    const allEmails = Array.from(emails);
+    console.log(`Email extraction complete: ${allEmails.length} found, 0 inferred`);
+    
+    return allEmails;
 }
 
 // Extract additional business information for AI analysis
@@ -1187,23 +1300,203 @@ function sendStatusUpdate(status, type = 'default') {
     });
 }
 
-// Enhanced email extraction using multiple methods
+// Extract emails from text
 function extractEmailsFromText(text) {
-    const emailPattern = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/gi;
-    const matches = text.match(emailPattern);
+    const emails = [];
+    const emailRegex = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/gi;
+    const matches = text.match(emailRegex);
     
     if (matches) {
-        // Filter out common false positives
-        return matches.filter(email => {
-            const lowerEmail = email.toLowerCase();
-            return !lowerEmail.includes('example.com') &&
-                   !lowerEmail.includes('email.com') &&
-                   !lowerEmail.includes('@2x') &&
-                   !lowerEmail.includes('@3x');
+        matches.forEach(email => {
+            if (isValidEmail(email)) {
+                emails.push(email.toLowerCase());
+            }
         });
     }
     
+    return [...new Set(emails)]; // Remove duplicates
+}
+
+// Enhanced email extraction with multiple patterns
+function extractEmailsFromTextEnhanced(text) {
+    const emails = new Set();
+    
+    // Multiple regex patterns for different email formats
+    const emailPatterns = [
+        // Standard email pattern
+        /([a-zA-Z0-9][a-zA-Z0-9._-]*@[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,})/gi,
+        // Email with quotes
+        /["']([a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})["']/gi,
+        // Email in brackets
+        /[<\[]([a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})[>\]]/gi,
+        // Email with mailto:
+        /mailto:([a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/gi,
+        // Email with spaces around @
+        /([a-zA-Z0-9._-]+)\s*@\s*([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/gi,
+        // Email with unicode characters
+        /([a-zA-Z0-9._\u0080-\uFFFF-]+@[a-zA-Z0-9.\u0080-\uFFFF-]+\.[a-zA-Z]{2,})/gi
+    ];
+    
+    emailPatterns.forEach(pattern => {
+        let match;
+        while ((match = pattern.exec(text)) !== null) {
+            let email = match[1] || match[0];
+            // Handle the space pattern specially
+            if (match[2]) {
+                email = match[1].trim() + '@' + match[2].trim();
+            }
+            email = email.toLowerCase().trim();
+            if (isValidEmail(email)) {
+                emails.add(email);
+            }
+        }
+    });
+    
+    return Array.from(emails);
+}
+
+// Extract obfuscated emails (e.g., "contact [at] example [dot] com")
+function extractObfuscatedEmails(text) {
+    const emails = new Set();
+    
+    // Common obfuscation patterns
+    const obfuscationPatterns = [
+        // [at] and [dot] pattern
+        /([a-zA-Z0-9._-]+)\s*\[at\]\s*([a-zA-Z0-9.-]+)\s*\[dot\]\s*([a-zA-Z]{2,})/gi,
+        // (at) and (dot) pattern
+        /([a-zA-Z0-9._-]+)\s*\(at\)\s*([a-zA-Z0-9.-]+)\s*\(dot\)\s*([a-zA-Z]{2,})/gi,
+        // @ replaced with "at" and . replaced with "dot"
+        /([a-zA-Z0-9._-]+)\s+at\s+([a-zA-Z0-9.-]+)\s+dot\s+([a-zA-Z]{2,})/gi,
+        // @ replaced with " at " and . replaced with " dot "
+        /([a-zA-Z0-9._-]+)\s+AT\s+([a-zA-Z0-9.-]+)\s+DOT\s+([a-zA-Z]{2,})/gi,
+        // Various symbols instead of @
+        /([a-zA-Z0-9._-]+)\s*[@＠]\s*([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/gi,
+        // Spaces or underscores instead of dots
+        /([a-zA-Z0-9._-]+)@([a-zA-Z0-9-]+)[\s_]([a-zA-Z]{2,})/gi
+    ];
+    
+    obfuscationPatterns.forEach(pattern => {
+        let match;
+        while ((match = pattern.exec(text)) !== null) {
+            let email;
+            if (match[3]) {
+                // For patterns with separate domain parts
+                email = match[1] + '@' + match[2] + '.' + match[3];
+            } else if (match[2]) {
+                // For patterns with complete domain
+                email = match[1] + '@' + match[2];
+            }
+            
+            if (email) {
+                email = email.toLowerCase().trim();
+                if (isValidEmail(email)) {
+                    emails.add(email);
+                }
+            }
+        }
+    });
+    
+    return Array.from(emails);
+}
+
+// Extract domain from URL
+function extractDomainFromUrl(url) {
+    if (!url) return '';
+    try {
+        const urlObj = new URL(url);
+        let domain = urlObj.hostname;
+        // Remove www. prefix
+        domain = domain.replace(/^www\./, '');
+        return domain;
+    } catch (e) {
+        return '';
+    }
+}
+
+// Find contact page links
+function findContactPageLinks() {
+    const contactLinks = [];
+    const contactKeywords = [
+        'contact', 'contacto', 'kontakt', 'contato', 'contatto',
+        'email', 'e-mail', 'mail',
+        'about', 'about-us', 'aboutus', 'sobre',
+        'connect', 'reach', 'get-in-touch',
+        'support', 'help', 'customer-service',
+        'inquiry', 'enquiry', 'inquire',
+        'message', 'write', 'feedback'
+    ];
+    
+    // Look for links containing contact-related keywords
+    const allLinks = document.querySelectorAll('a[href]');
+    allLinks.forEach(link => {
+        if (isElementInBusinessDetailsPanel(link)) {
+            const href = link.href.toLowerCase();
+            const text = link.textContent.toLowerCase();
+            const ariaLabel = (link.getAttribute('aria-label') || '').toLowerCase();
+            
+            const hasContactKeyword = contactKeywords.some(keyword => 
+                href.includes(keyword) || 
+                text.includes(keyword) || 
+                ariaLabel.includes(keyword)
+            );
+            
+            if (hasContactKeyword) {
+                contactLinks.push({
+                    url: link.href,
+                    text: link.textContent,
+                    type: 'contact_page'
+                });
+            }
+        }
+    });
+    
+    return contactLinks;
+}
+
+// Infer common business emails based on domain
+function inferCommonBusinessEmails(domain, businessName) {
+    if (!domain || domain.includes('google.com') || domain.includes('facebook.com')) {
     return [];
+    }
+    
+    const emails = new Set();
+    
+    // Common business email prefixes
+    const commonPrefixes = [
+        'info', 'contact', 'hello', 'admin', 'support',
+        'sales', 'enquiries', 'enquiry', 'mail', 'office',
+        'reception', 'general', 'team', 'help', 'service',
+        'customerservice', 'customer.service', 'customer-service',
+        'reservations', 'booking', 'bookings', 'orders',
+        'shop', 'store', 'online', 'web', 'website'
+    ];
+    
+    // Add domain-based emails
+    commonPrefixes.forEach(prefix => {
+        emails.add(`${prefix}@${domain}`);
+    });
+    
+    // Try to create emails based on business name
+    if (businessName) {
+        const cleanName = businessName
+            .toLowerCase()
+            .replace(/[^a-z0-9]/g, '')
+            .substring(0, 20);
+        
+        if (cleanName.length > 3) {
+            emails.add(`${cleanName}@${domain}`);
+            emails.add(`info@${cleanName}.com`);
+            emails.add(`contact@${cleanName}.com`);
+        }
+        
+        // Try first word of business name
+        const firstWord = businessName.split(' ')[0].toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (firstWord.length > 3) {
+            emails.add(`${firstWord}@${domain}`);
+        }
+    }
+    
+    return Array.from(emails);
 }
 
 // Check for emails in various page elements
