@@ -68,6 +68,51 @@ async function startScrapingProcess() {
                 if (result.dataset.scraped === 'true') continue;
                 
                 try {
+                    // First, try to extract name from the search result before clicking
+                    let preClickName = null;
+                    const resultNameSelectors = [
+                        // Modern Google Maps search result selectors
+                        '.fontHeadlineSmall',
+                        '.fontHeadlineLarge', 
+                        '.qBF1Pd',
+                        '.NrDZNb',
+                        '.section-result-title',
+                        '.DUwDvf',
+                        '.lfPIob',
+                        
+                        // Traditional selectors
+                        'h3',
+                        'h4',
+                        '.place-name',
+                        '.result-title',
+                        '.business-name',
+                        '.poi-name',
+                        
+                        // Data attribute selectors
+                        '[data-value]',
+                        '[data-name]',
+                        '[data-title]',
+                        '[aria-label]:not([aria-label*="star"]):not([aria-label*="review"])',
+                        
+                        // Fallback selectors
+                        '.title',
+                        '.name',
+                        'span[role="heading"]',
+                        'div[role="heading"]'
+                    ];
+                    
+                    for (const selector of resultNameSelectors) {
+                        const nameEl = result.querySelector(selector);
+                        if (nameEl) {
+                            const extractedName = nameEl.textContent.trim();
+                            if (isValidBusinessName(extractedName)) {
+                                preClickName = extractedName;
+                                console.log(`Pre-click name extracted: ${preClickName}`);
+                                break;
+                            }
+                        }
+                    }
+                    
                     // Click on the result to get more details
                     const clickableElement = findClickableElement(result);
                     if (clickableElement) {
@@ -77,7 +122,13 @@ async function startScrapingProcess() {
                         await sleep(1000);
                         
                         // Extract data
-                        const data = await extractBusinessData();
+                        const data = await extractBusinessData(preClickName);
+                        
+                        // Use pre-click name as fallback if main extraction failed or returned generic text
+                        if (data && (!data.name || data.name === 'Unknown Business') && preClickName) {
+                            console.log('Using pre-click name as fallback:', preClickName);
+                            data.name = preClickName;
+                        }
                         
                         if (data && data.name) {
                             chrome.runtime.sendMessage({
@@ -125,7 +176,7 @@ async function startScrapingProcess() {
 }
 
 // Extract business data from the details panel
-async function extractBusinessData() {
+async function extractBusinessData(preClickName = null) {
     try {
         const data = {};
         
@@ -135,10 +186,148 @@ async function extractBusinessData() {
         // Additional wait for dynamic content to load
         await sleep(1000);
         
-        // Extract name
-        const nameElement = document.querySelector('h1');
-        if (nameElement) {
-            data.name = nameElement.textContent.trim();
+        // Extract name with multiple fallback selectors
+        let businessName = null;
+        
+        // Try multiple selectors in order of preference
+        const nameSelectors = [
+            // Most specific selectors for business details panel (2024 Google Maps)
+            'h1[data-attrid="title"]',
+            '[data-section-id="pane"] h1',
+            '[data-section-id="overlay"] h1', 
+            '.section-hero-header h1',
+            '.section-hero-header-title',
+            '.section-hero-header-title-text',
+            '.rogA2c h1',
+            '.x3AX1-LfntMc-header-title h1',
+            '.x3AX1-LfntMc-header-title',
+            
+            // Modern Google Maps selectors (frequently updated)
+            'h1.DUwDvf',
+            'h1.lfPIob',
+            '.DUwDvf.fontHeadlineLarge',
+            '.lfPIob.fontHeadlineLarge',
+            '.lfPIob.fontHeadlineSmall',
+            'h1[data-value]',
+            '[data-value][role="heading"]',
+            '[role="heading"][aria-level="1"]',
+            
+            // Business name in details panel
+            '[data-item-id="name"]',
+            '[data-attrid="title"]',
+            '.section-hero-header .fontHeadlineSmall',
+            '.section-hero-header .fontHeadlineLarge', 
+            '.section-hero-header-title .fontHeadlineSmall',
+            '.section-hero-header-title .fontHeadlineLarge',
+            
+            // Additional modern selectors
+            '.place-name',
+            '.business-name',
+            '.poi-name',
+            '.entity-name',
+            '.location-name',
+            '.venue-name',
+            
+            // More specific h1 selectors
+            'div[role="main"] h1',
+            '.section-layout h1',
+            '.section-layout-root h1',
+            
+            // Fallback to any h1 in the business details area
+            'h1'
+        ];
+        
+        for (const selector of nameSelectors) {
+            try {
+                const nameElement = document.querySelector(selector);
+                if (nameElement) {
+                    const extractedName = nameElement.textContent.trim();
+                    
+                    // Validate that this is actually a business name and not a generic label
+                    if (isValidBusinessName(extractedName)) {
+                        
+                        businessName = extractedName;
+                        console.log(`Found business name using selector "${selector}": ${businessName}`);
+                        break;
+                    } else {
+                        console.log(`Rejected name "${extractedName}" from selector "${selector}" - appears to be generic label`);
+                    }
+                }
+            } catch (error) {
+                console.log(`Error with selector "${selector}":`, error);
+                continue;
+            }
+        }
+        
+        // If still no name found, try extracting from the clicked result element
+        if (!businessName) {
+            console.log('No name found in details panel, trying to extract from search results...');
+            try {
+                const searchResults = getBusinessResults();
+                const clickedResult = searchResults.find(result => result.dataset.scraped === 'true');
+                if (clickedResult) {
+                    const resultNameSelectors = [
+                        '.fontHeadlineSmall',
+                        '.fontHeadlineLarge', 
+                        '.qBF1Pd',
+                        '.NrDZNb',
+                        '.section-result-title',
+                        '.DUwDvf',
+                        '.lfPIob',
+                        '.section-result-content h3',
+                        '.section-result-content h4',
+                        'h3',
+                        'h4',
+                        '.place-name',
+                        '.business-name',
+                        '.poi-name',
+                        '[data-value]',
+                        '[data-name]',
+                        '[data-title]'
+                    ];
+                    
+                    for (const selector of resultNameSelectors) {
+                        const nameEl = clickedResult.querySelector(selector);
+                        if (nameEl) {
+                            const extractedName = nameEl.textContent.trim();
+                            if (isValidBusinessName(extractedName)) {
+                                businessName = extractedName;
+                                console.log(`Found business name from search result using selector "${selector}": ${businessName}`);
+                                break;
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                console.log('Error extracting name from search results:', error);
+            }
+        }
+        
+        // Final fallback: use a more generic approach
+        if (!businessName) {
+            console.log('Using final fallback for name extraction...');
+            const allH1s = document.querySelectorAll('h1');
+            for (const h1 of allH1s) {
+                const text = h1.textContent.trim();
+                if (isValidBusinessName(text)) {
+                    businessName = text;
+                    console.log(`Found business name using fallback h1: ${businessName}`);
+                    break;
+                }
+            }
+        }
+        
+        // Use preClickName as additional fallback if available
+        if (!businessName && preClickName) {
+            console.log('Using pre-click name as final fallback:', preClickName);
+            businessName = preClickName;
+        }
+        
+        if (businessName) {
+            data.name = businessName;
+        } else {
+            console.warn('Could not extract business name - no valid name found');
+            data.name = 'Unknown Business';
         }
         
         // Extract address
@@ -315,7 +504,47 @@ async function extractEmailsComprehensively() {
     console.log('User email detected:', userEmail);
     
     // Get business name and website for inference
-    const businessName = document.querySelector('h1')?.textContent?.trim() || '';
+    let businessName = '';
+    
+    // Use the same improved name extraction logic
+    const nameSelectors = [
+        'h1[data-attrid="title"]',
+        '[data-section-id="pane"] h1',
+        '[data-section-id="overlay"] h1', 
+        '.section-hero-header h1',
+        '.section-hero-header-title',
+        '.rogA2c h1',
+        
+        // Modern selectors
+        'h1.DUwDvf',
+        'h1.lfPIob',
+        '.DUwDvf.fontHeadlineLarge',
+        '.lfPIob.fontHeadlineLarge',
+        
+        // Data attributes
+        '[data-item-id="name"]',
+        '[data-attrid="title"]',
+        '.section-hero-header .fontHeadlineSmall',
+        '.section-hero-header .fontHeadlineLarge',
+        'div[role="main"] h1',
+        '.section-layout h1',
+        'h1'
+    ];
+    
+    for (const selector of nameSelectors) {
+        try {
+            const nameElement = document.querySelector(selector);
+            if (nameElement) {
+                const extractedName = nameElement.textContent.trim();
+                if (isValidBusinessName(extractedName)) {
+                    businessName = extractedName;
+                    break;
+                }
+            }
+        } catch (error) {
+            continue;
+        }
+    }
     const websiteElement = document.querySelector('a[data-item-id="authority"]');
     const websiteUrl = websiteElement?.href || '';
     const domain = extractDomainFromUrl(websiteUrl);
@@ -1524,4 +1753,113 @@ function findEmailsInPage() {
     });
     
     return Array.from(emails);
+}
+
+// Validate if extracted text is a valid business name
+function isValidBusinessName(name) {
+    if (!name || typeof name !== 'string') {
+        return false;
+    }
+    
+    const trimmedName = name.trim();
+    
+    // Check length constraints
+    if (trimmedName.length < 2 || trimmedName.length > 200) {
+        return false;
+    }
+    
+    // List of invalid/generic names to filter out
+    const invalidNames = [
+        'result',
+        'results', 
+        'search results',
+        'map',
+        'maps',
+        'google maps',
+        'google',
+        'loading',
+        'loading...',
+        'please wait',
+        'wait',
+        'error',
+        'not found',
+        'no results',
+        'try again',
+        'search',
+        'searching',
+        'searching...',
+        'directions',
+        'route',
+        'navigate',
+        'location',
+        'place',
+        'business',
+        'establishment',
+        'point of interest',
+        'poi',
+        'undefined',
+        'null',
+        'empty',
+        'no name',
+        'unknown',
+        'n/a',
+        'na',
+        'none',
+        'blank'
+    ];
+    
+    const lowerName = trimmedName.toLowerCase();
+    
+    // Check against invalid names
+    if (invalidNames.includes(lowerName)) {
+        return false;
+    }
+    
+    // Check for phrases that indicate generic content
+    const invalidPhrases = [
+        'search for',
+        'directions to', 
+        'route to',
+        'navigate to',
+        'go to',
+        'find on',
+        'view on',
+        'open in',
+        'get directions',
+        'see on map',
+        'view details',
+        'more info',
+        'click here',
+        'tap here',
+        'select this',
+        'choose this'
+    ];
+    
+    if (invalidPhrases.some(phrase => lowerName.includes(phrase))) {
+        return false;
+    }
+    
+    // Check if it's mostly numbers or special characters (likely not a business name)
+    const alphaNumericCount = (trimmedName.match(/[a-zA-Z0-9]/g) || []).length;
+    const totalLength = trimmedName.length;
+    
+    if (alphaNumericCount / totalLength < 0.6) {
+        return false;
+    }
+    
+    // Check for suspicious patterns
+    if (/^[0-9\s\-\(\)]+$/.test(trimmedName)) { // Only numbers and phone-like characters
+        return false;
+    }
+    
+    if (/^[^a-zA-Z]*$/.test(trimmedName)) { // No letters at all
+        return false;
+    }
+    
+    // Additional validation: should contain at least one letter
+    if (!/[a-zA-Z]/.test(trimmedName)) {
+        return false;
+    }
+    
+    return true;
 } 
