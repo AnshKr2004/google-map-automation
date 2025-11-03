@@ -440,8 +440,9 @@ async function extractBusinessData(preClickName = null) {
         }
         
         // If we still have no emails and Grok API is enabled, try that
-        if (data.name && extractedEmails.length === 0 && scrapingSettings.useGrokAPI) {
-            console.log('Attempting Grok API for email extraction...');
+        // BUT ONLY for additional contact info, NOT for generating fake emails
+        if (data.name && scrapingSettings.useGrokAPI) {
+            console.log('Attempting Grok API for additional contact information...');
             try {
                 const grokResponse = await chrome.runtime.sendMessage({
                     action: 'useGrokAPI',
@@ -449,12 +450,23 @@ async function extractBusinessData(preClickName = null) {
                 });
                 
                 if (grokResponse && grokResponse.success && grokResponse.data) {
-                    // Merge the Grok API results
-                    if (grokResponse.data.emails && grokResponse.data.emails.length > 0) {
-                        console.log('Found emails from Grok API:', grokResponse.data.emails);
-                        data.email = grokResponse.data.emails[0];
-                        data.additional_emails = grokResponse.data.emails.slice(1);
-                        data.email_source = 'ai';
+                    // Only add emails if they look real and are from the website domain
+                    if (grokResponse.data.emails && grokResponse.data.emails.length > 0 && data.website) {
+                        const websiteDomain = extractDomainFromUrl(data.website);
+                        const realEmails = grokResponse.data.emails.filter(email => {
+                            // Only accept emails that match the business website domain
+                            return email.includes('@' + websiteDomain) && !isGenericInferredEmail(email);
+                        });
+                        
+                        if (realEmails.length > 0 && extractedEmails.length === 0) {
+                            console.log('Found domain-matching emails from Grok API:', realEmails);
+                            data.email = realEmails[0];
+                            if (realEmails.length > 1) {
+                                data.additional_emails = realEmails.slice(1);
+                            }
+                            data.email_source = 'ai';
+                            extractedEmails = realEmails;
+                        }
                     }
                     
                     if (grokResponse.data.phones && grokResponse.data.phones.length > 0) {
@@ -551,18 +563,26 @@ async function extractEmailsComprehensively() {
     
     // Enhanced Priority Method: Look for business email in the most likely locations first
     const priorityBusinessEmailSelectors = [
-        // Direct business contact sections
+        // Direct business contact sections - most specific first
         '[data-item-id="email"]',
         '[data-item-id*="contact"]',
         '[data-item-id*="phone:email"]',
         '[data-item-id*="email:primary"]',
+        '[data-item-id*="email:secondary"]',
         'a[href^="mailto:"]',
+        
+        // Contact sections in business details
         '.section-contact-info',
         '.contact-info',
         '.business-contact',
         '.section-contact',
         '.contact-details',
         '.business-info',
+        
+        // Google Maps specific contact areas
+        '[data-section-id="contact"]',
+        '[data-section-id="contact-info"]',
+        '[data-section-id="business-contact"]',
         
         // Business description and about areas
         '[data-item-id="description"]',
@@ -675,7 +695,34 @@ async function extractEmailsComprehensively() {
         '[data-tooltip*="Email"]',
         '[data-tooltip*="email"]',
         '[data-tooltip*="Contact"]',
-        '[data-tooltip*="contact"]'
+        '[data-tooltip*="contact"]',
+        
+        // Additional Google Maps business panel selectors
+        '.section-info-line',
+        '.section-info-text',
+        '.section-info-definition',
+        '.section-info-hover-text',
+        '.place-desc-large',
+        '.place-desc-medium',
+        '.place-desc-small',
+        '.section-contact-line',
+        '.section-contact-text',
+        '.section-business-contact',
+        '.business-details',
+        '.place-details',
+        '.contact-methods',
+        '.business-contact-methods',
+        
+        // Modern Google Maps UI elements
+        '[data-value*="@"]',
+        '[data-email]',
+        '[data-contact]',
+        '[aria-describedby*="email"]',
+        '[aria-describedby*="contact"]',
+        '.email-link',
+        '.contact-link',
+        '.business-email-link',
+        '.contact-email-link'
     ];
     
     // Search in priority locations first with enhanced extraction
@@ -693,13 +740,24 @@ async function extractEmailsComprehensively() {
                     }
                 }
                 
-                // For other elements, extract from text content
-                const foundEmails = extractEmailsFromTextEnhanced(element.textContent);
-                foundEmails.forEach(email => {
-                    if (isValidBusinessEmail(email, userEmail)) {
-                        emails.add(email);
-                        console.log('Found email in text content:', email);
-                    }
+                // For other elements, extract from multiple text sources
+                const textSources = [
+                    element.textContent,
+                    element.innerText,
+                    element.getAttribute('title'),
+                    element.getAttribute('aria-label'),
+                    element.getAttribute('data-tooltip'),
+                    element.getAttribute('placeholder')
+                ].filter(text => text && text.trim().length > 0);
+                
+                textSources.forEach(text => {
+                    const foundEmails = extractEmailsFromTextEnhanced(text);
+                    foundEmails.forEach(email => {
+                        if (isValidBusinessEmail(email, userEmail)) {
+                            emails.add(email);
+                            console.log('Found email in element text:', email, 'from:', selector);
+                        }
+                    });
                 });
                 
                 // Check all data attributes for emails
@@ -766,19 +824,41 @@ async function extractEmailsComprehensively() {
         });
     }
     
-    // Enhanced Method: Check for emails in all clickable elements
-    const clickableElements = document.querySelectorAll('a, button, [role="button"], [onclick], [data-click]');
-    clickableElements.forEach(element => {
-        if (isElementInBusinessDetailsPanel(element)) {
-            const text = element.textContent || element.getAttribute('aria-label') || element.getAttribute('title') || '';
-            const foundEmails = extractEmailsFromTextEnhanced(text);
-            foundEmails.forEach(email => {
-                if (isValidBusinessEmail(email, userEmail)) {
-                    emails.add(email);
-                    console.log('Found email in clickable element:', email);
-                }
-            });
-        }
+    // Enhanced Method: Check for emails in all clickable elements and buttons
+    const clickableSelectors = [
+        'a', 'button', '[role="button"]', '[onclick]', '[data-click]',
+        // Google Maps specific clickable elements
+        '[data-item-id]', '[jsaction]', '[data-action]',
+        '.section-contact-info button', '.contact-info button',
+        '.business-contact button', '.section-contact button'
+    ];
+    
+    clickableSelectors.forEach(selector => {
+        const elements = document.querySelectorAll(selector);
+        elements.forEach(element => {
+            if (isElementInBusinessDetailsPanel(element)) {
+                // Check multiple text sources for each clickable element
+                const textSources = [
+                    element.textContent,
+                    element.innerText,
+                    element.getAttribute('aria-label'),
+                    element.getAttribute('title'),
+                    element.getAttribute('data-tooltip'),
+                    element.getAttribute('data-value'),
+                    element.href // for links
+                ].filter(text => text && text.trim().length > 0);
+                
+                textSources.forEach(text => {
+                    const foundEmails = extractEmailsFromTextEnhanced(text);
+                    foundEmails.forEach(email => {
+                        if (isValidBusinessEmail(email, userEmail)) {
+                            emails.add(email);
+                            console.log('Found email in clickable element:', email, 'selector:', selector);
+                        }
+                    });
+                });
+            }
+        });
     });
     
     // NEW: Look for contact page links and attempt to infer emails
@@ -913,31 +993,9 @@ async function extractEmailsComprehensively() {
         }
     });
     
-    // NEW: If we have a domain but no emails found yet, try email inference
-    if (emails.size === 0 && domain) {
-        console.log('No emails found directly, trying email inference from domain:', domain);
-        const inferredEmails = inferCommonBusinessEmails(domain, businessName);
-        
-        // Only add the most likely inferred emails (top 5)
-        const mostLikelyInferred = inferredEmails.slice(0, 5);
-        console.log('Inferred possible emails:', mostLikelyInferred);
-        
-        // These are inferred, so we'll mark them for tracking
-        mostLikelyInferred.forEach(email => {
-            if (isValidBusinessEmail(email, userEmail)) {
-                emails.add(email);
-            }
-        });
-        
-        // If we added inferred emails, return them with a flag
-        if (emails.size > 0) {
-            const allEmails = Array.from(emails);
-            // Mark that these are inferred by returning a special structure
-            allEmails._isInferred = true;
-            console.log(`Email extraction complete: 0 found, ${allEmails.length} inferred`);
-            return allEmails;
-        }
-    }
+    // REMOVED: Email inference that creates fake emails
+    // Instead, if no emails are found, we'll return an empty array
+    // This ensures only real emails from the actual business page are extracted
     
     // Return found emails
     const allEmails = Array.from(emails);
@@ -1078,6 +1136,55 @@ function getUserEmail() {
     return userEmail;
 }
 
+// Check if an email is a generic inferred pattern (not real)
+function isGenericInferredEmail(email) {
+    if (!email) return true;
+    
+    const lowerEmail = email.toLowerCase();
+    
+    // Common generic patterns that indicate fake/inferred emails
+    const genericPatterns = [
+        // Standard generic prefixes
+        /^info@/,
+        /^contact@/,
+        /^hello@/,
+        /^admin@/,
+        /^support@/,
+        /^sales@/,
+        /^enquiry@/,
+        /^enquiries@/,
+        /^mail@/,
+        /^office@/,
+        /^reception@/,
+        /^general@/,
+        /^team@/,
+        /^help@/,
+        /^service@/,
+        /^customerservice@/,
+        /^booking@/,
+        /^reservations@/,
+        /^orders@/,
+        /^shop@/,
+        /^store@/,
+        
+        // Generic patterns with company name placeholders
+        /^[a-z]+@[a-z]+\.(com|org|net|co\.uk|ie|us|ca|au|de|fr|it|es)$/,
+        
+        // Patterns that look like they were generated rather than found
+        /^[a-z]{3,8}@[a-z]{3,15}\.(com|org|net)$/
+    ];
+    
+    // Check if email matches any generic pattern
+    const isGeneric = genericPatterns.some(pattern => pattern.test(lowerEmail));
+    
+    if (isGeneric) {
+        console.log('Rejected generic/inferred email:', email);
+        return true;
+    }
+    
+    return false;
+}
+
 // Check if an element is part of the business details panel
 function isElementInBusinessDetailsPanel(element) {
     if (!element) return false;
@@ -1166,6 +1273,11 @@ function isValidBusinessEmail(email, userEmail) {
     // Filter out user's own email
     if (userEmail && lowerEmail === userEmail.toLowerCase()) {
         console.log('Filtered out user email:', email);
+        return false;
+    }
+    
+    // Filter out generic/inferred emails
+    if (isGenericInferredEmail(email)) {
         return false;
     }
     

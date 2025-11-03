@@ -358,9 +358,9 @@ async function callGrokAPI(data) {
         // const API_ENDPOINT = 'https://api.aimlapi.com/v1/chat/completions';
         // const API_ENDPOINT = 'https://gateway.theturbo.ai/v1/chat/completions';
         
-        // Enhanced prompt for better email extraction
+        // Updated prompt to focus on REAL contact info, not generated emails
         const extractionPrompt = `
-You are an expert at finding business contact information. I need you to analyze the following business data and help find potential email addresses, phone numbers, and other contact information.
+You are an expert at analyzing business information to find additional contact details. I need you to analyze the following business data and extract any additional contact information that might be present in the additional information field.
 
 Business Information:
 - Name: ${data.name || 'Unknown'}
@@ -369,44 +369,29 @@ Business Information:
 - Website: ${data.website || 'Unknown'}
 - Additional Information: ${data.additionalInfo || 'None'}
 
-Please help me find contact information by:
+IMPORTANT INSTRUCTIONS:
+1. **DO NOT generate or infer email addresses** - Only extract emails if they are explicitly mentioned in the additional information
+2. **DO NOT create fake emails** like info@domain.com, contact@domain.com unless they are specifically mentioned
+3. **Focus on extracting real information** that is actually present in the data provided
 
-1. **Email Address Analysis**: 
-   - If a website is provided, suggest likely email patterns for this business
-   - Consider common business email formats (info@, contact@, sales@, support@, hello@)
-   - Look for patterns in the business name that might form email addresses
-   - Consider the business type and industry-standard contact methods
-   - For domains like example.com, suggest: info@example.com, contact@example.com, hello@example.com, admin@example.com, support@example.com
+Please analyze the additional information for:
 
-2. **Phone Number Analysis**:
-   - Extract any additional phone numbers from the additional information
-   - Look for alternative formats of existing numbers
-   - Identify fax numbers or other contact numbers
-
-3. **Contact Method Analysis**:
-   - Identify social media profiles mentioned
-   - Find any alternative contact methods
-   - Look for physical addresses or location information
-
-4. **Business Domain Analysis**:
-   - If the business has a website, what domain-based emails are most likely?
-   - What are common email patterns for this type of business?
-   - Are there industry-specific contact methods?
+1. **Email Addresses**: Only extract if explicitly mentioned in the additional information text
+2. **Phone Numbers**: Extract any additional phone numbers found in the additional information
+3. **Social Media**: Extract any social media profiles or handles mentioned
+4. **Additional Contacts**: Extract any other contact methods mentioned
 
 Please provide your analysis in this JSON format:
 {
-    "emails": ["email1@example.com", "email2@example.com"],
-    "phones": ["phone1", "phone2"],
-    "social_media": ["profile1", "profile2"],
-    "additional_contacts": ["contact1", "contact2"],
+    "emails": [],
+    "phones": [],
+    "social_media": [],
+    "additional_contacts": [],
     "confidence": "high|medium|low",
-    "reasoning": "Brief explanation of your analysis",
-    "suggestions": ["suggestion1", "suggestion2"]
+    "reasoning": "Brief explanation of what was found in the additional information"
 }
 
-Focus on realistic, likely contact information based on the business data provided. If no specific information can be determined, provide educated guesses based on common business practices and patterns.
-
-IMPORTANT: Always include at least 3-5 likely email addresses if a website domain is provided.
+CRITICAL: Only include information that is explicitly present in the provided data. Do NOT generate or infer contact information. If no additional emails are found in the additional information, return an empty emails array.
 
 Return only valid JSON.
 `;
